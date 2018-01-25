@@ -1,5 +1,5 @@
 (ns hypercrud.browser.browser-ui
-  (:require [cats.core :as cats :refer [mlet]]
+  (:require [cats.core :as cats :refer [mlet >>=]]
             [cats.monad.either :as either]
             [hypercrud.browser.base :as base]
             [hypercrud.browser.context :as context]
@@ -9,7 +9,8 @@
             [hypercrud.ui.native-event-listener :refer [native-listener]]
             [hypercrud.ui.safe-render :refer [safe-user-renderer]]
             [hypercrud.ui.stale :as stale]
-            [hypercrud.util.core :as util]
+            [hypercrud.ui.tooltip :as tooltip]
+            [hypercrud.util.core :as util :refer [unwrap]]
             [hypercrud.util.non-fatal :refer [try-either]]
             [hypercrud.util.reactive :as reactive]
             [hyperfiddle.foundation :as foundation]
@@ -100,31 +101,28 @@
                             (foundation-actions/set-route (:peer ctx) encoded-route dispatch! get-state)))))
     (.stopPropagation event)))
 
-(defn wrap-ui [v' route ctx & [class]]
+(defn wrap-ui [ui' route ctx & [class]]
   (let [on-click (reactive/partial (or (:page-on-click ctx)
                                        (reactive/partial page-on-click ctx))
                                    route)]
     ^{:key route}                                           ; clear memory when route changes
     [native-listener {:on-click on-click}
-     [stale/loading (stale/can-be-loading? ctx) v'
+     [stale/loading (stale/can-be-loading? ctx) ui'
       (fn [e] [:div {:class (classes "ui" class "hyperfiddle-error")} (ui-error e ctx)])
-      (fn [v] [:div {:class (classes "ui" class)} v])
-      (fn [v] [:div {:class (classes "ui" class "hyperfiddle-loading")} v])]]))
+      (fn [ui] [:div {:class (classes "ui" class)} ui])
+      (fn [ui] [:div {:class (classes "ui" class "hyperfiddle-loading")} ui])]]))
 
 (defn ui-from-route [route ctx & [class]]
-  [wrap-ui (cats/bind (base/data-from-route route ctx) process-data) route ctx class])
+  [wrap-ui (>>= (base/data-from-route route ctx) process-data) route ctx class])
 
-(defn ui-from-link [link ctx & [class]]
-  (let [link-props' (try-either (link/build-link-props link ctx))
-        v' (mlet [link-props link-props']
-             ; todo should filter hidden links out before recursing (in render-inline-links)
-             (if (:hidden link-props)
-               (either/right [:noscript])
-               (mlet [route (routing/build-route' link ctx)
-                      ; entire context must be encoded in the route
-                      data (base/data-from-route route (context/clean ctx))]
-                 (process-data data))))
-        route (-> (cats/fmap :route link-props')
-                  (cats/mplus (either/right nil))
-                  (cats/extract))]
-    [wrap-ui v' route ctx (classes class (css-slugify (:link/rel link)))]))
+(defn ui-from-link [link ctx & [class2]]
+  (let [link-props' (try-either (link/build-link-props link ctx)) ; Why can this throw? This shouldn't throw.
+        {:keys [route class hidden tooltip]} (unwrap link-props') #_"What does this error even mean"]
+    ; todo should filter hidden links out before recursing (in render-inline-links)
+    ;;;; Dustin disagrees with above, because the hidden-eval could break and report that error here
+    (if-not hidden                                          ; undocumented semantic user-prop
+      [tooltip/tooltip
+       (let [[status label] (if (string? tooltip) [:info tooltip] [(first tooltip) (second tooltip)])]
+         {:status status :label label})
+       (let [ui' (if route (>>= (base/data-from-route route ctx) process-data) link-props')]
+         [wrap-ui ui' route ctx (classes class class2 (css-slugify (:link/rel link)))])])))
